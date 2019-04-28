@@ -1,4 +1,3 @@
-from pytorch_pretrained_bert import WordpieceTokenizer
 from functools import reduce
 import operator
 import numpy as np
@@ -9,6 +8,9 @@ from collections import defaultdict, Counter
 import spacy
 from torchvision import transforms
 import torch
+import pickle
+from collections import OrderedDict
+from tokenizer import WordPieceTokenizerToIndex
 
 nlp = spacy.load('en')
 
@@ -19,7 +21,7 @@ class Voc:
         self.word2index = {}
         self.word2count = {}
         self.index2word = {}
-        self.num_words = 3
+        self.num_words = 0
 
 
     #write to txt
@@ -45,7 +47,10 @@ class Voc:
         if word in self.word2index:
             return self.word2index[word]
         else:
-            return self.word2index['UNK']
+            try:
+                return self.word2index['UNK']
+            except:
+                return self.word2index['[UNK]']
 
     def id2word(self, id):
         return self.index2word[id]
@@ -56,25 +61,21 @@ class Voc:
 
 
 
-word_vocab = Voc()
-char_vocab = Voc()
-class_vocab = Voc()
 
 
-def get_dataset():
+def get_dataset(word_vocab, char_vocab):
     #get text, label
-    train_txt, train_label = create_dataset('train.csv')
-    test_txt, test_label = create_dataset('test.csv')
-    trn = IMDBDataset(zip(train_txt, train_label), transform=transforms.Compose([Tokenizer(),
-                                                                                 ToIndex(word_vocab, char_vocab, class_vocab),
-                                                                                 ToTensor(max_word_len=, max_seq_len=,
+    train_txt, train_label = create_dataset_from_pkl('train.pkl')
+    test_txt, test_label = create_dataset_from_pkl('test.pkl')
+    trn = IMDBDataset(list(zip(train_txt, train_label)), transform=transforms.Compose([Tokenizer(),
+                                                                                 ToIndex(word_vocab, char_vocab),
+                                                                                 ToTensor(max_word_len=16, max_seq_len=400,
                                                                                           char_padding_idx=char_vocab.word2id('PAD'),
                                                                                           word_padding_idx=word_vocab.word2id('PAD'))
                                                                                  ]))
-    tst = IMDBDataset(zip(test_txt, test_label), transform=transforms.Compose([Tokenizer(),
-                                                                                 ToIndex(word_vocab, char_vocab,
-                                                                                         class_vocab),
-                                                                                 ToTensor(max_word_len=, max_seq_len=,
+    tst = IMDBDataset(list(zip(test_txt, test_label)), transform=transforms.Compose([Tokenizer(),
+                                                                                 ToIndex(word_vocab, char_vocab),
+                                                                                 ToTensor(max_word_len=16, max_seq_len=400,
                                                                                           char_padding_idx=char_vocab.word2id(
                                                                                               'PAD'),
                                                                                           word_padding_idx=word_vocab.word2id(
@@ -83,6 +84,24 @@ def get_dataset():
     return trn, tst
 
 
+def get_dataset_bert(word_vocab, char_vocab, wordpiece_tokenizer):
+    #get text, label
+    train_txt, train_label = create_dataset('train.csv')
+    test_txt, test_label = create_dataset('test.csv')
+    #tokenizer, word_vocab, char_vocab, **kwargs
+    trn = IMDBDataset(list(zip(train_txt, train_label)), transform=transforms.Compose([WordPieceTokenizerToIndex(wordpiece_tokenizer,
+                                                                                                                 word_vocab,
+                                                                                                                 char_vocab,
+                                                                                                                 max_word_len=16,
+                                                                                                                 max_seq_len=400
+                                                                                                                 )]))
+    tst = IMDBDataset(list(zip(test_txt, test_label)), transform=transforms.Compose([WordPieceTokenizerToIndex(wordpiece_tokenizer,
+                                                                                                                 word_vocab,
+                                                                                                                 char_vocab,
+                                                                                                                 max_word_len=16,
+                                                                                                                 max_seq_len=400
+                                                                                                                 )]))
+    return trn, tst
 
 
 class IMDBDataset():
@@ -106,18 +125,26 @@ class Tokenizer():
 
     def __call__(self, sample):
         x, y = sample['x'], sample['y']
-        split_x = list(filter(lambda a: a.text.lower() not in self.filter, nlp(x).noun_chunks))
+        if isinstance(x, list):
+            char_x = [list(word) for word in x]
+            sample = {'char_x': char_x, 'x': x, 'y': y}
+            return sample
+        split_x = list(filter(lambda a: a.text.lower() not in self.filter, x.split()))
         char_x = [list(word) for word in split_x]
         if isinstance(self.tokenizer, WordpieceTokenizer):
             split_x = list(reduce(operator.add, [self.tokenizer(word.lower()) for word in x.split() if word not in self.filter]))
         sample = {'char_x':char_x, 'x':split_x, 'y':y}
         return sample
 
+
+
+
+
 class ToIndex():
-    def __init__(self, word_vocab, char_vocab, class_vocab):
+    def __init__(self, word_vocab, char_vocab):
         self.word_vocab = word_vocab
         self.char_vocab = char_vocab
-        self.class_vocab =  class_vocab
+
     def __call__(self, sample):
         char_x, x, y = sample['char_x'], sample['x'], sample['y']
         char_x = [[self.char_vocab.word2id(c) for c in word] for word in char_x]
@@ -126,10 +153,8 @@ class ToIndex():
         x = [self.word_vocab.word2id(word) for word in x]
         x_len = len(x)
 
-        y = self.char_vocab.word2id(y)
 
-        sample = {'char_x':torch.from_numpy(char_x), 'char_x_len':torch.IntTensor(char_x_len),
-                  'x':torch.from_numpy(x), 'x_len':torch.IntTensor(x_len), 'y':torch.IntTensor(y)}
+        sample = {'char_x':char_x, 'char_x_len':char_x_len,'x':x, 'x_len':x_len, 'y': y}
         return sample
 
 
@@ -163,15 +188,19 @@ class ToTensor():
         for i, l in enumerate(char_x_len):
             if l:
                 if l >= max_word_len:
-                    char_new_x[i,:] = char_x[i, :max_word_len]
+                    char_new_x[i,:] = char_x[i][:max_word_len]
                     char_new_x_len.append(max_word_len)
                 elif l < max_word_len:
-                    char_new_x[i,:l] = char_x[i, :]
+                    char_new_x[i,:l] = char_x[i]
                     char_new_x_len.append(l)
             else:
                 char_new_x_len.append(0)
         assert len(char_new_x_len) == len(char_x_len)
-        sample = {'x':new_x, 'x_len':x_len,'char_x':char_new_x, 'char_x_len': char_new_x_len, 'y':y}
+        sample = {'x':torch.from_numpy(new_x).long(),
+                  'x_len':torch.IntTensor([x_len]),
+                  'char_x':torch.from_numpy(char_new_x).long(),
+                  'char_x_len': torch.IntTensor(char_new_x_len),
+                  'y':torch.LongTensor([y[0]])}
         return sample
 
 
@@ -199,21 +228,45 @@ def create_dataset(data_path):
         label += labels.tolist()
     return text, label
 
-def create_vocab(texts, min_count=2):
+
+def create_dataset_from_pkl(data_path):
+    datasets = pickle.load(open(data_path,'rb'))
+    texts = []
+    labels = []
+    for item in datasets:
+        texts.append(item['text'])
+        labels.append(item['label'])
+    labels = list(reduce(operator.add, labels))
+    return texts, labels
+
+
+def create_vocab(texts, labels, min_count=2, save_file=None):
+    word_len = []
+    seq_len = []
+    dataset = []
     print(texts[0])
     word_vocab = open('word_vocab.txt','w',encoding='utf-8')
     char_vocab = open('char_word_vocab.txt','w',encoding='utf-8')
     word_dict = defaultdict(int)
     char_dict = defaultdict(int)
 
-    for text in texts:
-        for word in list(nlp(text).noun_chunks):
+    for t_idx, text in enumerate(texts):
+        l = 0
+        words = []
+        label = []
+        for i, word in enumerate(nlp(text).noun_chunks):
             word = word.text
             if word not in '!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n':
+                word_len.append(len(word))
                 word = word.lower()
                 word_dict[word] += 1
                 for char in word:
                     char_dict[char] += 1
+                words.append(word)
+            l = i
+        seq_len.append(l)
+        label.append(labels[t_idx])
+        dataset.append({'text':words, 'label':label})
     print(f'....word len:{len(word_dict)}.......')
     print(f'....char len:{len(char_dict)}.......')
     word_vocab.write('PAD\n'); word_vocab.write('UNK\n')
@@ -225,13 +278,29 @@ def create_vocab(texts, min_count=2):
     for item in Counter(char_dict).most_common():
         char_vocab.write(item[0]+'\n')
     char_vocab.close()
-
-
+    print(f'avg word_len : {sum(word_len) / len(word_len)}')
+    print(f'max word_len : {max(word_len)}')
+    print(f'avg seq_len : {sum(seq_len) / len(seq_len)}')
+    print(f'max seq_len : {max(seq_len)}')
+    pickle.dump(dataset, open(save_file,'wb'))
 
 if __name__ == '__main__':
-    text, *_ = create_dataset('train.csv')
-    create_vocab(text, min_count=2)
+    texts, label = create_dataset_from_pkl('train.pkl')
+    tst = IMDBDataset(list(zip(texts, label)), transform=transforms.Compose([Tokenizer(),
+                                                                               ToIndex(word_vocab, char_vocab),
+                                                                               ToTensor(max_word_len=16,
+                                                                                        max_seq_len=400,
+                                                                                        char_padding_idx=char_vocab.word2id(
+                                                                                            'PAD'),
+                                                                                        word_padding_idx=word_vocab.word2id(
+                                                                                            'PAD'))
+                                                                               ]))
 
 
-
+    for item in tst:
+        print(f"x : {item['x']}")
+        print(f"len_x : {item['x_len']}")
+        print(f"char_x : {item['char_x']}")
+        print(f"char_x_len : {item['char_x_len']}")
+        print(f"y : {item['y']}")
 
