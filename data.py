@@ -286,21 +286,5 @@ def create_vocab(texts, labels, min_count=2, save_file=None):
 
 if __name__ == '__main__':
     texts, label = create_dataset_from_pkl('train.pkl')
-    tst = IMDBDataset(list(zip(texts, label)), transform=transforms.Compose([Tokenizer(),
-                                                                               ToIndex(word_vocab, char_vocab),
-                                                                               ToTensor(max_word_len=16,
-                                                                                        max_seq_len=400,
-                                                                                        char_padding_idx=char_vocab.word2id(
-                                                                                            'PAD'),
-                                                                                        word_padding_idx=word_vocab.word2id(
-                                                                                            'PAD'))
-                                                                               ]))
-
-
-    for item in tst:
-        print(f"x : {item['x']}")
-        print(f"len_x : {item['x_len']}")
-        print(f"char_x : {item['char_x']}")
-        print(f"char_x_len : {item['char_x_len']}")
-        print(f"y : {item['y']}")
+    print(np.unique(np.array(label)))
 
